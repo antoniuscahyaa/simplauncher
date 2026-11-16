@@ -1,0 +1,127 @@
+name: Build RecentsMod
+
+# Cara pakai:
+# 1. Simpan file ini di repo sebagai  .github/workflows/recents.yml
+# 2. Upload zip RecentsMod-src.zip (nama harus diawali RecentsMod) ke ROOT repo, lalu commit.
+# 3. Zip flashable (install + restore) ada di tab Releases (tag recents-N) dan di Artifacts.
+#
+# Tidak butuh secrets: APK Shady asli memakai AOSP testkey yang publik, dan build
+# berhenti sendiri kalau sertifikatnya tidak cocok dengan APK asli.
+
+on:
+  push:
+    paths:
+      - 'RecentsMod*.zip'
+  workflow_dispatch:
+    inputs:
+      zip_name:
+        description: 'Nama file zip di root repo (kosongkan = RecentsMod zip terakhir)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: recents-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pilih file zip
+        shell: bash
+        env:
+          INPUT_ZIP: ${{ github.event.inputs.zip_name }}
+        run: |
+          ZIP="$INPUT_ZIP"
+          if [ -z "$ZIP" ]; then
+            ZIP=$(git log -1 --diff-filter=AM --name-only --format= -- 'RecentsMod*.zip' | grep -v '/' | head -n1 || true)
+          fi
+          if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
+            echo "::error::Tidak ada RecentsMod*.zip di root repo."
+            exit 1
+          fi
+          echo "Zip: $ZIP"
+          echo "ZIP_FILE=$ZIP" >> "$GITHUB_ENV"
+
+      - name: Ekstrak zip
+        shell: bash
+        run: |
+          SRC="$RUNNER_TEMP/src"
+          rm -rf "$SRC" && mkdir -p "$SRC"
+          unzip -q "$ZIP_FILE" -d "$SRC"
+          B=$(find "$SRC" -maxdepth 3 -name build.sh -not -path '*/__MACOSX/*' | head -n1)
+          if [ -z "$B" ]; then
+            echo "::error::build.sh tidak ada di dalam zip."
+            exit 1
+          fi
+          echo "PROJECT_DIR=$(dirname "$B")" >> "$GITHUB_ENV"
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          bash build.sh 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Kumpulkan hasil
+        shell: bash
+        run: |
+          mkdir -p out
+          cp "$PROJECT_DIR"/dist/RecentsMod-*.zip out/
+          cp "$PROJECT_DIR"/dist/ShadyQuickStep-patched.apk out/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RecentsMod
+          path: out/*
+
+      - name: Buat Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "recents-${GITHUB_RUN_NUMBER}" out/RecentsMod-install.zip out/RecentsMod-restore.zip \
+            --target "$GITHUB_SHA" \
+            --title "RecentsMod build ${GITHUB_RUN_NUMBER}" \
+            --notes "Dibangun dari ${ZIP_FILE} (commit ${GITHUB_SHA::7}). Flash RecentsMod-install.zip lewat TWRP; RecentsMod-restore.zip mengembalikan APK asli." \
+            --prerelease
+
+      - name: Ringkasan error
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '### Error build'
+            echo '```'
+            if [ -f build.log ]; then
+              grep -E 'GAGAL|rror|FAILED|Exception|W: |Could not' -A3 build.log | head -n 100 || true
+            else
+              echo 'build.log belum ada.'
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnostik
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recents-debug
+          path: |
+            build.log
+            ${{ env.PROJECT_DIR }}/dist/diagnostics/*
+          if-no-files-found: ignore
