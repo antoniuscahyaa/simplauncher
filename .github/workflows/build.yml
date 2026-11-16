@@ -16,6 +16,7 @@ on:
   push:
     paths:
       - '*.zip'
+      - '!RecentsMod*.zip'
   workflow_dispatch:
     inputs:
       zip_name:
@@ -50,7 +51,7 @@ jobs:
           ZIP="$INPUT_ZIP"
           if [ -z "$ZIP" ]; then
             # zip di root repo yang terakhir disentuh oleh sebuah commit
-            ZIP=$(git log -1 --diff-filter=AM --name-only --format= -- '*.zip' | grep -v '/' | head -n1 || true)
+            ZIP=$(git log -1 --diff-filter=AM --name-only --format= -- '*.zip' ':!RecentsMod*.zip' | grep -v '/' | head -n1 || true)
           fi
           if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
             echo "::error::Tidak ada file .zip di root repo. Upload zip proyek dulu."
